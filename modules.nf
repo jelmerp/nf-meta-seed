@@ -30,6 +30,9 @@ process KRAKENDB_DL_DB {
     output:
     path 'kraken_db'
 
+    when:
+    params.skip_kraken == false
+    
     script:
     """
     wget $db_url
@@ -41,6 +44,9 @@ process KRAKENDB_DL_DB {
 process KRAKENDB_DL_TAX {
     output:
     path 'kraken_db_tax'
+
+    when:
+    params.skip_kraken == false
 
     script:
     """
@@ -55,6 +61,9 @@ process KRAKENDB_DL_LIB {
 
     output:
     path '*'
+
+    when:
+    params.skip_kraken == false
 
     script:
     """
@@ -73,10 +82,13 @@ process KRAKENDB_COMBINE_LIBS {
     output:
     path 'lib_dir'
 
+    when:
+    params.skip_kraken == false
+
     script:
     """
     mkdir -p lib_dir
-    cp -rv $lib_dirs lib_dir/
+    cp -rLv $lib_dirs lib_dir/
     """
 }
 
@@ -90,14 +102,17 @@ process KRAKENDB_COMBINE_AND_ADD {
     output:
     path "kraken_db_unbuilt"
 
+    when:
+    params.skip_kraken == false
+
     script:
     """
     mkdir -p kraken_db_unbuilt/library
-    cp -rv ${tax_dir}/taxonomy kraken_db_unbuilt
-    cp -rv ${lib_dir}/* kraken_db_unbuilt/library/
+    cp -rLv ${tax_dir}/taxonomy kraken_db_unbuilt
+    cp -rLv ${lib_dir}/* kraken_db_unbuilt/library/
 
     if [[ -d ${genomes_to_add_dir} ]]; then
-        for fasta in ${genomes_to_add_dir}/*; do
+        for fasta in ${genomes_to_add_dir}/*fna; do
             kraken2-build --add-to-library \$fasta --db kraken_db_unbuilt
         done
     fi
@@ -112,10 +127,13 @@ process KRAKENDB_BUILD {
     output:
     path 'kraken_db'
 
+    when:
+    params.skip_kraken == false
+
     script:
     """
-    mkdir kraken_db
-    cp -rv $kraken_db_unbuilt/* kraken_db/
+    mkdir -p kraken_db
+    cp -rLv $kraken_db_unbuilt/* kraken_db/
     
     kraken2-build --build --db kraken_db --threads $task.cpus
     """
@@ -134,6 +152,9 @@ process KRAKEN {
     tuple val(sample_id), path('*report.txt'), emit: report
     tuple val(sample_id), path('*main.txt'), emit: main
     path '*report.txt', emit: report_path // For MultiQC, to avoid complications with tuple
+
+    when:
+    params.skip_kraken == false
 
     script:
     """
@@ -159,9 +180,12 @@ process BRACKENDB_BUILD {
     output:
     path 'bracken_db'
 
+    when:
+    params.skip_bracken == false
+
     script:
     """
-    cp -rv $kraken_db bracken_db
+    cp -rLv $kraken_db bracken_db
 
     bracken-build -d bracken_db -l $read_len -t $task.cpus
     """
@@ -180,6 +204,9 @@ process BRACKEN {
 
     output:
     path '*bracken*txt'
+
+    when:
+    params.skip_bracken == false
 
     script:
     """
@@ -200,8 +227,8 @@ process ASSEMBLY {
     tuple val(sample_id), path(reads)
     
     output:
-    path "${sample_id}.fasta", emit: assembly
-    path "${sample_id}_scaffolds.fasta"
+    tuple val(sample_id), path("${sample_id}_scaffolds.fasta"), emit: fasta
+    path "${sample_id}_contigs.fasta"
     path "${sample_id}_spades.log"
     
     script:
@@ -216,7 +243,7 @@ process ASSEMBLY {
         --threads $task.cpus \
         --memory $memory_gb
     
-    mv outdir/contigs.fasta ${sample_id}.fasta
+    mv outdir/contigs.fasta ${sample_id}_contigs.fasta
     mv outdir/scaffolds.fasta ${sample_id}_scaffolds.fasta
     mv outdir/spades.log ${sample_id}_spades.log
     """
@@ -234,5 +261,155 @@ process MULTIQC {
     script:
     """
     multiqc .
+    """
+}
+
+process HOST_INDEX {
+    publishDir "${params.outdir}/hostindex", mode: "copy"
+    
+    input:
+    path host_fasta
+
+    output:
+    path 'host_index_dir'
+
+    script:
+    """
+    bowtie2-build $host_fasta host_index
+
+    mkdir -p host_index_dir
+    mv *bt2 host_index_dir/
+    """
+}
+
+process HOST_REMOVE {
+    input:
+    path(host_index_dir)
+    tuple val(sample_id), path(reads)
+
+    output:
+    tuple val(sample_id), path('*.fastq')
+
+    shell:
+    '''
+    index_prefix=$(ls !{host_index_dir} | head -n1 | sed -E "s/.[0-9]+.bt2//")
+    index_prefix_full=!{host_index_dir}/$index_prefix
+
+    bowtie2 \
+        -p !{task.cpus} \
+        -x $index_prefix_full \
+        -1 !{reads[0]} \
+        -2 !{reads[1]} \
+        --local \
+        --un-conc \
+        !{sample_id}_host_removed_reads \
+        > !{sample_id}_mapped_unmapped.sam
+
+    mv !{sample_id}_host_removed_reads.1 !{sample_id}_hostrm_R1.fastq
+    mv !{sample_id}_host_removed_reads.2 !{sample_id}_hostrm_R2.fastq
+    '''
+}
+
+process MAXBIN2 {
+    input:
+    tuple val(sample_id), path(assembly), path(reads)
+
+    output:
+    tuple val(sample_id), path('*.fasta'), emit: fasta
+
+    script:
+    """
+    set +e
+    
+    run_MaxBin.pl \
+        -contig $assembly \
+        -reads ${reads[0]} \
+        -reads2 ${reads[1]} \
+        -out $sample_id
+
+    [[ \$? -ne 0 ]] && touch maxbin_dummy_${sample_id}.fasta
+    """
+}
+
+process METABAT2 {
+    input:
+    tuple val(sample_id), path(assembly), path(bam), path(bam_idx), path(bed)
+
+    output:
+    tuple val(sample_id), path ('*.fasta'), emit: fasta, optional: true
+    path 'depth.txt'
+
+    script:
+    """
+    jgi_summarize_bam_contig_depths --outputDepth depth.txt "$bam"
+
+    metabat2 -i "$assembly" -a depth.txt -m 1500 --maxP 75 -s 100000 -o "$sample_id"
+
+    n_files=`find . -type f -name "*fasta" | wc -l`
+    [[ \$n_files -eq 0 ]] && touch metabat_dummy_${sample_id}.fasta
+    """
+}
+
+process CONCOCT {
+    input:
+    tuple val(sample_id), path(assembly), path(bam), path(bam_idx), path(bed)
+
+    output:
+    tuple val(sample_id), path('fasta_bins/*.fa'), emit: fasta, optional: true
+    path 'contigs10k.fasta'
+    path 'covtable.tsv'
+    path 'clustering_gt1000.csv'
+    path 'merged.csv'
+
+    script:
+    """
+    cut_up_fasta.py "$assembly" -c 100000 --merge_last -b "$bed" > contigs10k.fasta
+    concoct_coverage_table.py "$bed" "$bam" > covtable.tsv
+    concoct --composition_file contigs10k.fasta --coverage_file covtable.tsv -s 100
+    merge_cutup_clustering.py clustering_gt1000.csv > merged.csv
+
+    mkdir -p fasta_bins
+    extract_fasta_bins.py "$assembly" merged.csv --output_path fasta_bins
+    """
+}
+
+process DREP {
+    publishDir "${params.outdir}/drep", mode: "copy", pattern: "dereplicated_genomes"
+    
+    input:
+    tuple val(sample_id), path(concoct_fa), path(maxbin_fa), path(metabat_fa)
+
+    output:
+    path 'data_tables'
+    path 'dereplicated_genomes', emit: depreplicated_genomes
+    path 'data/checkM/checkM_outdir/results.tsv', emit: checkM_result
+
+    script:
+    """
+    dRep dereplicate drep_out -g *.f*a
+    """
+}
+
+process MAP2ASSEMBLY {
+    input:
+    tuple val(sample_id), path(reads)
+    tuple val(sample_id), path(assembly)
+
+    output:
+    tuple val(sample_id),
+          path("${sample_id}.bam"),
+          path("${sample_id}.bam.bai"),
+          path("${sample_id}.bed")
+
+    script:
+    """
+    bwa index -p "$sample_id" "$assembly"
+
+    bwa mem -t $task.cpus -a "$sample_id" ${reads[0]} ${reads[1]} |
+        samtools sort -o "$sample_id".bam -
+
+    samtools index "$sample_id".bam
+
+    bedtools bamtobed -i "$sample_id".bam > "$sample_id".bed
     """
 }
