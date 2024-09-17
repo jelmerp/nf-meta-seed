@@ -305,8 +305,8 @@ process HOST_REMOVE {
         !{sample_id}_host_removed_reads \
         > !{sample_id}_mapped_unmapped.sam
 
-    mv !{sample_id}_host_removed_reads.1 !{sample_id}_hostrm_R1.fastq
-    mv !{sample_id}_host_removed_reads.2 !{sample_id}_hostrm_R2.fastq
+    gzip -c !{sample_id}_host_removed_reads.1 > !{sample_id}_hostrm_R1.fastq.gz
+    gzip -c !{sample_id}_host_removed_reads.2 > !{sample_id}_hostrm_R2.fastq.gz
     '''
 }
 
@@ -327,7 +327,9 @@ process MAXBIN2 {
         -reads2 ${reads[1]} \
         -out $sample_id
 
-    [[ \$? -ne 0 ]] && touch maxbin_dummy_${sample_id}.fasta
+    if [[ \$? -ne 0 ]]; then
+        touch maxbin_dummy_${sample_id}.fasta
+    fi
     """
 }
 
@@ -336,7 +338,7 @@ process METABAT2 {
     tuple val(sample_id), path(assembly), path(bam), path(bam_idx), path(bed)
 
     output:
-    tuple val(sample_id), path ('*.fasta'), emit: fasta, optional: true
+    tuple val(sample_id), path('*.fa'), emit: fasta, optional: true
     path 'depth.txt'
 
     script:
@@ -345,8 +347,10 @@ process METABAT2 {
 
     metabat2 -i "$assembly" -a depth.txt -m 1500 --maxP 75 -s 100000 -o "$sample_id"
 
-    n_files=`find . -type f -name "*fasta" | wc -l`
-    [[ \$n_files -eq 0 ]] && touch metabat_dummy_${sample_id}.fasta
+    n_files=`find . -type f -name "*fa" | wc -l`
+    if [[ \$n_files -eq 0 ]]; then
+        touch metabat_dummy_${sample_id}.fa
+    fi
     """
 }
 
@@ -363,9 +367,14 @@ process CONCOCT {
 
     script:
     """
-    cut_up_fasta.py "$assembly" -c 100000 --merge_last -b "$bed" > contigs10k.fasta
-    concoct_coverage_table.py "$bed" "$bam" > covtable.tsv
+    cp "$bed" copy.bed # This is needed so Nextflow won't modify the input via the symlink
+
+    cut_up_fasta.py "$assembly" -c 100000 --merge_last -b copy.bed > contigs10k.fasta
+    
+    concoct_coverage_table.py copy.bed "$bam" > covtable.tsv
+    
     concoct --composition_file contigs10k.fasta --coverage_file covtable.tsv -s 100
+    
     merge_cutup_clustering.py clustering_gt1000.csv > merged.csv
 
     mkdir -p fasta_bins
@@ -380,9 +389,9 @@ process DREP {
     tuple val(sample_id), path(concoct_fa), path(maxbin_fa), path(metabat_fa)
 
     output:
-    path 'data_tables'
-    path 'dereplicated_genomes', emit: depreplicated_genomes
-    path 'data/checkM/checkM_outdir/results.tsv', emit: checkM_result
+    path 'drep_out/data_tables'
+    path 'drep_out/dereplicated_genomes', emit: derepped
+    path 'drep_out/data/checkM/checkM_outdir/results.tsv', emit: checkM_result
 
     script:
     """
@@ -392,8 +401,7 @@ process DREP {
 
 process MAP2ASSEMBLY {
     input:
-    tuple val(sample_id), path(reads)
-    tuple val(sample_id), path(assembly)
+    tuple val(sample_id), path(assembly), path(reads)
 
     output:
     tuple val(sample_id),
