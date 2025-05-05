@@ -1,7 +1,22 @@
+// QC reads
+process FASTQC {
+    publishDir "$params.outdir/fastqc", mode: 'copy', pattern: '*html'
+    
+    input:
+    tuple val(sample_id), path(reads)
+
+    output:
+    path "*.html", emit: html
+    path "*.zip", emit: zip
+
+    script:
+    """
+    fastqc --quiet ${reads[0]} ${reads[1]}
+    """
+}
+
 // QC and trim reads
 process FASTP {
-    publishDir "$params.outdir/fastp", mode: 'copy', pattern: '*html'
-    
     input:
     tuple val(sample_id), path(reads)
 
@@ -12,12 +27,12 @@ process FASTP {
     script:
     """
     fastp \
-        -i ${reads[0]} \
-        -I ${reads[1]} \
-        -o ${sample_id}_R1_trimmed.fastq.gz \
-        -O ${sample_id}_R2_trimmed.fastq.gz \
-        -h ${sample_id}_fastp_report.html \
-        -j ${sample_id}_fastp_report.json \
+        -i ${reads[0]} \\
+        -I ${reads[1]} \\
+        -o ${sample_id}_R1_trimmed.fastq.gz \\
+        -O ${sample_id}_R2_trimmed.fastq.gz \\
+        -h ${sample_id}_fastp_report.html \\
+        -j ${sample_id}_fastp_report.json \\
         -w $task.cpus
     """
 }
@@ -141,33 +156,73 @@ process KRAKENDB_BUILD {
 
 // Run Kraken to assign taxonomy to reads
 process KRAKEN {
-    publishDir "$params.outdir/kraken", mode: 'copy', pattern: '*txt'
-
     input:
     tuple val(sample_id), path(reads)
-    path(db)
+    path kraken_db
+    val confidence
+    val minhitgroups
+    val run_id
 
     output:
+    tuple val(sample_id), path('*report.txt'), path('*main.txt'), emit: output
     tuple val(sample_id), path('*fastq'), emit: classified_fq
-    tuple val(sample_id), path('*report.txt'), emit: report
-    tuple val(sample_id), path('*main.txt'), emit: main
-    path '*report.txt', emit: report_path // For MultiQC, to avoid complications with tuple
+    path 'mqc/*.txt', emit: mqc // For MultiQC, to avoid complications with tuple
+    path '*.log'
 
     when:
     params.skip_kraken == false
 
     script:
     """
-    kraken2 \
-        --db ${db} \
-        --report ${sample_id}_kraken-report.txt \
-        --output ${sample_id}_kraken-main.txt \
-        --classified-out ${sample_id}#.fastq \
-        --gzip-compressed \
-        --paired \
-        --threads $task.cpus \
-        ${reads[0]} \
+    kraken2 \\
+        --db ${kraken_db} \\
+        --report ${sample_id}_kraken-report.txt \\
+        --output ${sample_id}_kraken-main.txt \\
+        --classified-out ${sample_id}#.fastq \\
+        --minimum-hit-groups $minhitgroups \\
+        --confidence $confidence \\
+        --gzip-compressed \\
+        --paired \\
+        --threads $task.cpus \\
+        ${reads[0]} \\
         ${reads[1]}
+    
+    mkdir -p mqc
+    cp ${sample_id}_kraken-report.txt mqc/${run_id}_${sample_id}_kraken-report.txt
+
+    cp .command.log command_kraken_${sample_id}.log
+    """
+}
+
+// Extract reads from Kraken run
+process KRAKEN_EXTRACT {
+    input:
+    tuple val(sample_id), path(kraken_report), path(kraken_output), path(reads)
+    val tax_ids
+
+    output:
+    tuple val(sample_id), path('*fastq.gz'), emit: fq
+    path 'logs'
+
+    script:
+    """
+    extract_kraken_reads.py \\
+        -t ${tax_ids} \\
+        -k ${kraken_output} \\
+        -r ${kraken_report} \\
+        -s ${reads[0]} \\
+        -s2 ${reads[1]} \\
+        -o ${sample_id}_R1.fastq \\
+        -o2 ${sample_id}_R2.fastq \\
+        --exclude \\
+        --include-children \\
+        --fastq-output
+
+    gzip -fv ${sample_id}_R1.fastq ${sample_id}_R2.fastq
+
+    mkdir -p logs
+    grep "reads printed to file" .command.log > nreads_extracted_${sample_id}.log
+    grep -v "reads processed" .command.log > command_extract_kraken_${sample_id}.log
     """
 }
 
@@ -191,12 +246,53 @@ process BRACKENDB_BUILD {
     """
 }
 
+// Get Krona Taxonomy
+process KRONA_TAX {
+    output:
+    path 'tax.tab'
+    
+    script:
+    """
+    wget https://raw.githubusercontent.com/marbl/Krona/refs/heads/master/KronaTools/updateTaxonomy.sh
+    wget https://raw.githubusercontent.com/marbl/Krona/refs/heads/master/KronaTools/scripts/taxonomy.make
+    wget https://raw.githubusercontent.com/marbl/Krona/refs/heads/master/KronaTools/scripts/extractTaxonomy.pl
+    mkdir -p scripts
+    mv taxonomy.make extractTaxonomy.pl scripts/
+    chmod +x scripts/*
+
+    bash updateTaxonomy.sh tax.tab
+    """
+}
+
+// Run Krona
+process KRONA {
+    input:
+    tuple val(sample_id), path(kraken_report), path(kraken_main)
+    path taxfile
+
+    output:
+    path '*html'
+
+    //? [-q <integer>]   Column of input files to use as query ID. Required if magnitude files are specified. [Default: '1']
+    //? [-t <integer>]   Column of input files to use as taxonomy ID. [Default: '2']
+    
+    script:
+    """
+    ktImportTaxonomy \\
+        -q 2 \\
+        -t 3 \\
+        -tax ${taxfile} \\
+        ${kraken_main} \\
+        -o krona_${sample_id}.html
+    """
+}
+
 // Run Bracken
 process BRACKEN {
     publishDir "$params.outdir/bracken", mode: 'copy', pattern: '*txt'
 
     input:
-    tuple val(sample_id), path(kraken_report)
+    tuple val(sample_id), path(kraken_report), path(kraken_main)
     path bracken_db
     val tax_level
     val min_reads
@@ -211,18 +307,21 @@ process BRACKEN {
     script:
     """
     bracken \
-        -i ${kraken_report} \
-        -d ${bracken_db} \
-        -o ${sample_id}_bracken-out.txt \
-        -w ${sample_id}_bracken-report.txt \
-        -r ${read_len} \
-        -l ${tax_level} \
+        -i ${kraken_report} \\
+        -d ${bracken_db} \\
+        -o ${sample_id}_bracken-out.txt \\
+        -w ${sample_id}_bracken-report.txt \\
+        -r ${read_len} \\
+        -l ${tax_level} \\
         -t ${min_reads}
     """
 }
 
 // Assemble reads
 process ASSEMBLY {
+    publishDir "$params.outdir/spades", mode: 'copy', pattern: '*scaffolds.fasta'
+    publishDir "$params.outdir/spades", mode: 'copy', pattern: '*spades.log'
+
     input:
     tuple val(sample_id), path(reads)
     
@@ -234,13 +333,13 @@ process ASSEMBLY {
     script:
     def memory_gb = MemoryUnit.of("${task.memory}").toUnit('GB')
     """
-    spades.py \
-        -1 ${reads[0]} \
-        -2 ${reads[1]} \
-        -o outdir \
-        --only-assembler \
-        --meta \
-        --threads $task.cpus \
+    spades.py \\
+        -1 ${reads[0]} \\
+        -2 ${reads[1]} \\
+        -o outdir \\
+        --only-assembler \\
+        --meta \\
+        --threads $task.cpus \\
         --memory $memory_gb
     
     mv outdir/contigs.fasta ${sample_id}_contigs.fasta
@@ -260,13 +359,11 @@ process MULTIQC {
 
     script:
     """
-    multiqc .
+    multiqc --interactive .
     """
 }
 
 process HOST_INDEX {
-    publishDir "${params.outdir}/hostindex", mode: "copy"
-    
     input:
     path host_fasta
 
@@ -282,28 +379,29 @@ process HOST_INDEX {
     """
 }
 
-process HOST_REMOVE {
+process HOST_REMOVE_ALIGN {
     input:
     path(host_index_dir)
     tuple val(sample_id), path(reads)
 
     output:
-    tuple val(sample_id), path('*.fastq')
+    tuple val(sample_id), path('*.fastq.gz'), emit: fastq //! ADDED .GZ HERE AND EMIT STATEMENT 2024-11-13
+    path('bowtie-log*txt')                                //! ADDED THIS LINE 2024-11-13
 
     shell:
     '''
     index_prefix=$(ls !{host_index_dir} | head -n1 | sed -E "s/.[0-9]+.bt2//")
     index_prefix_full=!{host_index_dir}/$index_prefix
 
-    bowtie2 \
-        -p !{task.cpus} \
-        -x $index_prefix_full \
-        -1 !{reads[0]} \
-        -2 !{reads[1]} \
-        --local \
-        --un-conc \
-        !{sample_id}_host_removed_reads \
-        > !{sample_id}_mapped_unmapped.sam
+    bowtie2 \\
+        -p !{task.cpus} \\
+        -x $index_prefix_full \\
+        -1 !{reads[0]} \\
+        -2 !{reads[1]} \\
+        --local \\
+        --un-conc !{sample_id}_host_removed_reads \\
+        -S !{sample_id}_mapped_unmapped.sam \\
+        2> bowtie-log_!{sample_id}.txt
 
     gzip -c !{sample_id}_host_removed_reads.1 > !{sample_id}_hostrm_R1.fastq.gz
     gzip -c !{sample_id}_host_removed_reads.2 > !{sample_id}_hostrm_R2.fastq.gz
@@ -321,10 +419,10 @@ process MAXBIN2 {
     """
     set +e
     
-    run_MaxBin.pl \
-        -contig $assembly \
-        -reads ${reads[0]} \
-        -reads2 ${reads[1]} \
+    run_MaxBin.pl \\
+        -contig $assembly \\
+        -reads ${reads[0]} \\
+        -reads2 ${reads[1]} \\
         -out $sample_id
 
     if [[ \$? -ne 0 ]]; then
@@ -419,5 +517,79 @@ process MAP2ASSEMBLY {
     samtools index "$sample_id".bam
 
     bedtools bamtobed -i "$sample_id".bam > "$sample_id".bed
+    """
+}
+
+process METAPHLAN_DB {
+    output:
+    path 'metaphlan_db'
+
+    script:
+    """
+    metaphlan --install --bowtie2db metaphlan_db
+    """
+}
+
+process METAPHLAN {
+    publishDir "${params.outdir}/metaphlan", mode: "copy", pattern: "*_profile.txt"
+    publishDir "${params.outdir}/metaphlan", mode: "copy", pattern: "*.biom"
+
+    input:
+    tuple val(sample_id), path(reads)
+    path metaphlan_db
+
+    output:
+    tuple val(sample_id), path("*_profile.txt")   ,                emit: profile
+    tuple val(sample_id), path("*.biom")          ,                emit: biom
+    tuple val(sample_id), path('*.bowtie2out.txt'), optional:true, emit: bt2out
+    path "*_profile.txt"                                         , emit: mqc
+
+    script:
+    """
+    BT2_DB_INDEX=`find -L ${metaphlan_db} -name "*.rev.1.bt2*" | sed 's/\\.rev.1.bt2.*\$//' | sed 's/.*\\///'`
+
+    metaphlan \\
+        --nproc ${task.cpus} \\
+        --input_type fastq \\
+        ${reads[0]},${reads[1]} \\
+        --bowtie2out ${sample_id}.bowtie2out.txt \\
+        --bowtie2db ${metaphlan_db} \\
+        --index \$BT2_DB_INDEX \\
+        --biom ${sample_id}.biom \\
+        --output_file ${sample_id}_profile.txt
+    """
+}
+
+process METAPHLAN_MERGE {
+    input:
+    path(profiles)
+
+    output:
+    path '*txt'
+
+    script:
+    """
+    merge_metaphlan_tables.py \\
+        -o ${sample_id}.txt \\
+        ${profiles}
+    """
+}
+
+//TODO FINISH THIS
+process HUMANN {
+    publishDir "${params.outdir}/humann", mode: "copy"
+
+    input:
+    tuple val(sample_id), path(reads)
+
+    output:
+    tuple val(sample_id), path ('*{.log,.tsv}')
+
+    script:
+    """
+    humann \
+        --input $reads \
+        --output . \
+        --threads $task.cpus
     """
 }
