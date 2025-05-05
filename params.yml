@@ -1,0 +1,51 @@
+# Input FASTQ files, should be a glob like 'data/fastq/SRR1258338*_R{1,2}.fastq.gz'
+reads: null
+
+# Final output dir
+outdir: null
+
+# Trimming
+save_trimmed_reads: false
+
+# Host genome removal
+host_removal_method: "kraken" # One of:  'kraken' or 'align' or 'none'
+save_hostremoved_reads: false
+host_asm: null
+host_index: null
+
+# Kraken and Bracken DBs
+# If wanting to use Kraken/Bracken with a DB that is already on file, use this param:
+krakendb_classif: null
+krakendb_host: null
+brackendb: null
+metaphlandb: null
+
+# If wanting to use Kraken with a custom-built DB, use this param to provide a dir with genomes to add:
+krakendb_classif_add: null
+krakendb_host_add: null
+# If wanting to use Kraken with a custom-built DB, use this param to provide a comma-separated list of 1 or more libraries
+# The library options are:  'archaea', 'bacteria', 'viral', 'plasmid', 'human', 'fungi', 'plant', 'protozoa', 'UniVec', 'UniVec_Core', 'nr', 'nt'
+# Example list:  'plant,viral,plasmid'
+krakendb_classif_libs: null
+krakendb_host_libs: null
+# Or provide a dir with already-downloaded libraries (not to be confused with a fully built database)
+krakendb_classif_libdir: null
+krakendb_host_libdir: null
+
+# Parameters for running Bracken
+bracken_taxlevel: "S"
+bracken_minreads: 10
+bracken_readlen: 150
+
+# Parameters for running Kraken
+# NCBI tax. ids of taxa to remove; if multiple, space-separated like '615 1024':
+kraken_tax_remove: "33090 33208" # Viridiplantae and Metazoa
+kraken_host_confidence: 0.15
+kraken_host_minhitgroups: 3
+kraken_classif_confidence: 0
+kraken_classif_minhitgroups: 1
+
+# Skipping processes
+skip_kraken: false
+skip_bracken: false
+skip_assembly: false
