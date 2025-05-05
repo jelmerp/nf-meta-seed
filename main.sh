@@ -16,15 +16,13 @@ workdir=work
 resume=true && resume_opt="-resume"
 
 # Script options and args
-reads=
-outdir=
+params=
 more_opts=()
 while [ "$1" != "" ]; do
     case "$1" in
-        -i | --reads )      shift; reads=$1 ;;
-        -o | --outdir )     shift; outdir=$1 ;;
-        -w | -work-dir )    shift; workdir=$1 ;;
-        -restart )          resume=false ;;
+        --params )          shift; params=$1 ;;
+        --workdir )         shift; workdir=$1 ;;
+        --restart )         resume=false ;;
         * )                 more_opts+=("$1") ;;
     esac
     shift
@@ -34,24 +32,19 @@ done
 set -euo pipefail
 
 # Check options
-[[ -z "$reads" ]] && echo "ERROR: Please use -i/--reads <reads> to specify your FASTQ files" && exit 1
-[[ -z "$outdir" ]] && echo "ERROR: Please use -o/--outdir <dir> to specify your output dir" && exit 1
+[[ -z "$params" ]] && echo "ERROR: Please use --params <params-file> to specify your parameter file" && exit 1
 [[ "$resume" == false ]] && resume_opt=
 
 # Report
 echo
 date
 echo "# Starting Nextflow nf-meta run with the following command:"
-echo "nextflow run $WORKFLOW --reads $reads --outdir $outdir -work-dir $workdir -ansi-log false -resume ${more_opts[*]}"
+echo "nextflow run $WORKFLOW -params-file $params -work-dir $workdir -ansi-log false $resume_opt ${more_opts[*]}"
 echo -e "\n==========================================\n"
-
-# Create the output dir
-mkdir -p "$outdir"/logs
 
 # Run the workflow
 nextflow run $WORKFLOW \
-    --reads "$reads" \
-    --outdir "$outdir" \
+    -params-file "$params" \
     -work-dir "$workdir" \
     -ansi-log false \
     $resume_opt \
