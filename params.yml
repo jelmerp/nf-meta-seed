@@ -1,51 +1,65 @@
-# Input FASTQ files, should be a glob like 'data/fastq/SRR1258338*_R{1,2}.fastq.gz'
-reads: null
+# This is a configuration file for the nf-meta-seed pipeline.
+# It is used to set parameters for the pipeline.
 
-# Final output dir
-outdir: null
+# ==============================================================================
+#                           INPUTS AND OUTPUTS
+# ==============================================================================
+# Input FASTQ files, should be a glob like 'data/fastq/SRR1258338*_R{1,2}.fastq.gz':
+reads: /fs/ess/PAS2693/jelmer/results/fqsub/10M/*_R{1,2}.fastq.gz
+outdir: results/nf-meta-seed      # Final output dir
 
-# Trimming
+# Host genome files (optional, if host_removal_method is 'align'):
+host_asm: /fs/ess/PAS2693/jelmer/data/ref/stock/MIN_20220631.fasta
+host_index: null                   # (An index will be built if not provided)
+
+# Optionally saving intermediate files
 save_trimmed_reads: false
-
-# Host genome removal
-host_removal_method: "kraken" # One of:  'kraken' or 'align' or 'none'
 save_hostremoved_reads: false
-host_asm: null
-host_index: null
 
-# Kraken and Bracken DBs
-# If wanting to use Kraken/Bracken with a DB that is already on file, use this param:
+
+# ==============================================================================
+#                           KEY SETTINGS
+# ==============================================================================
+host_removal_method: "align"          # One of: 'kraken' or 'align' or 'none'
+
+# Skipping processes
+skip_kraken: false
+skip_bracken: false
+skip_assembly: true                   
+
+
+# ==============================================================================
+#                           TAXONOMIC CLASSIFICATION DBS
+# ==============================================================================
+# If wanting to use pre-made DBs on file, use these params:
 krakendb_classif: null
 krakendb_host: null
 brackendb: null
 metaphlandb: null
 
-# If wanting to use Kraken with a custom-built DB, use this param to provide a dir with genomes to add:
+# If wanting to build a custom Kraken DB,
+# use this param to provide a dir with genomes to add:
 krakendb_classif_add: null
 krakendb_host_add: null
-# If wanting to use Kraken with a custom-built DB, use this param to provide a comma-separated list of 1 or more libraries
+
+# If wanting to use Kraken with a custom-built DB,
+# use this param to provide a comma-separated list of 1 or more libraries:
 # The library options are:  'archaea', 'bacteria', 'viral', 'plasmid', 'human', 'fungi', 'plant', 'protozoa', 'UniVec', 'UniVec_Core', 'nr', 'nt'
 # Example list:  'plant,viral,plasmid'
 krakendb_classif_libs: null
 krakendb_host_libs: null
-# Or provide a dir with already-downloaded libraries (not to be confused with a fully built database)
-krakendb_classif_libdir: null
-krakendb_host_libdir: null
 
-# Parameters for running Bracken
+# ==============================================================================
+#                        TAXONOMIC CLASSIFICATION OPTIONS
+# ==============================================================================
+# Option for running Kraken
+kraken_tax_remove: "33090 33208"    # NCBI taxonomic ids of taxa to remove (default: Viridiplantae and Metazoa)
+kraken_host_confidence: 0.15        # Kraken confidence threshold for host removal
+kraken_host_minhitgroups: 3         # Kraken min hit threshold for host removal
+kraken_classif_confidence: 0        # Kraken confidence threshold for classification
+kraken_classif_minhitgroups: 1      # Kraken min hit threshold for classification
+
+# Option for running Bracken
 bracken_taxlevel: "S"
 bracken_minreads: 10
 bracken_readlen: 150
-
-# Parameters for running Kraken
-# NCBI tax. ids of taxa to remove; if multiple, space-separated like '615 1024':
-kraken_tax_remove: "33090 33208" # Viridiplantae and Metazoa
-kraken_host_confidence: 0.15
-kraken_host_minhitgroups: 3
-kraken_classif_confidence: 0
-kraken_classif_minhitgroups: 1
-
-# Skipping processes
-skip_kraken: false
-skip_bracken: false
-skip_assembly: false
