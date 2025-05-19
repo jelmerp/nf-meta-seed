@@ -1,29 +1,5 @@
 #!/usr/bin/env nextflow
 
-// Process parameters
-krakendb_host_libs = params.krakendb_host_libs
-    ? params.krakendb_libs?.split(',') as List
-    : null
-krakendb_classif_libs = params.krakendb_classif_libs
-    ? params.krakendb_libs?.split(',') as List
-    : null
-skip_kraken = params.skip_kraken
-skip_bracken = params.skip_bracken
-skip_bracken = skip_kraken ? true : skip_bracken
-conf_classif = params.kraken_classif_confidence
-conf_host = params.kraken_host_confidence
-minhit_classif = params.kraken_classif_minhitgroups
-minhit_host = params.kraken_host_minhitgroups
-
-// Report
-log.info """
-    M E T A G E N O M I C S - N F   P I P E L I N E
-    ==============================================================
-    Reads in FASTQ files                                : ${params.reads}
-    Output directory                                    : ${params.outdir}
-    ==============================================================
-    """.stripIndent(true)
-
 // Import processes
 include { FASTQC } from './modules.nf'
 include { FASTP } from './modules.nf'
@@ -56,6 +32,31 @@ include { METAPHLAN_MERGE } from './modules.nf'
 
 // Define the workflow
 workflow  {
+    // Process parameters
+    krakendb_host_libs = params.krakendb_host_libs
+        ? params.krakendb_libs?.split(',') as List
+        : null
+    krakendb_classif_libs = params.krakendb_classif_libs
+        ? params.krakendb_libs?.split(',') as List
+        : null
+    skip_kraken = params.skip_kraken
+    skip_bracken = params.skip_bracken
+    skip_bracken = skip_kraken ? true : skip_bracken
+    conf_classif = params.kraken_classif_confidence
+    conf_host = params.kraken_host_confidence
+    minhit_classif = params.kraken_classif_minhitgroups
+    minhit_host = params.kraken_host_minhitgroups
+
+    // Report
+    log.info """
+    M E T A G E N O M I C S - N F   P I P E L I N E
+    ==============================================================
+    Reads in FASTQ files                   : ${params.reads}
+    Output directory                       : ${params.outdir}
+    Host removal method                    : ${params.host_removal_method}
+    Host assembly genome (if any)          : ${params.host_asm}
+    ==============================================================
+    """.stripIndent(true)
 
     // =========================================================================
     //                   CREATE CHANNELS FROM INPUT FILES
@@ -74,23 +75,17 @@ workflow  {
     krakendb_classif_ch = params.krakendb_classif && !skip_kraken
         ? Channel.fromPath(params.krakendb_classif, checkIfExists: true).first()
         : Channel.empty()
-    krakendb_host_add_ch = params.krakendb_host_add
-        ? Channel.fromPath(params.krakendb_host_add, checkIfExists: true).first()
+    krakendb_host_genomes_ch = params.krakendb_host_genomes
+        ? Channel.fromPath(params.krakendb_host_genomes, checkIfExists: true).first()
         : Channel.empty()
     krakendb_host_liblist_ch = krakendb_host_libs
         ? Channel.fromList(krakendb_host_libs)
         : null
-    krakendb_host_lib_ch = params.krakendb_host_libdir
-        ? Channel.fromPath(params.krakendb_host_libdir, checkIfExists: true)
-        : null
-    krakendb_classif_add_ch = params.krakendb_classif_add
-        ? Channel.fromPath(params.krakendb_classif_add, checkIfExists: true).first()
+    krakendb_classif_genomes_ch = params.krakendb_classif_genomes
+        ? Channel.fromPath(params.krakendb_classif_genomes, checkIfExists: true).first()
         : Channel.empty()
     krakendb_classif_liblist_ch = krakendb_classif_libs
         ? Channel.fromList(krakendb_classif_libs)
-        : null
-    krakendb_classif_lib_ch = params.krakendb_classif_libdir
-        ? Channel.fromPath(params.krakendb_classif_libdir, checkIfExists: true)
         : null
     brackendb_ch = params.brackendb && !skip_bracken
         ? Channel.fromPath(params.brackendb, checkIfExists: true).first()
@@ -112,35 +107,31 @@ workflow  {
         krakendb_host_tax_ch = KRAKENDB_DL_TAX()
         
         // If no library-dir was provided, download libraries:
-        if (!krakendb_host_lib_ch) {
-            krakendb_host_lib_ch = KRAKENDB_DL_LIB(krakendb_host_liblist_ch).collect()
-            krakendb_host_lib_ch = KRAKENDB_COMBINE_LIBS(krakendb_host_lib_ch)
-        }
+        krakendb_host_lib_ch = KRAKENDB_DL_LIB(krakendb_host_liblist_ch).collect()
+        krakendb_host_lib_ch = KRAKENDB_COMBINE_LIBS(krakendb_host_lib_ch)
         
         // Combine taxonomy, libraries, and optionally custom-addition genomes:
         krakendb_host_unbuilt_ch = KRAKENDB_COMBINE_AND_ADD(
             krakendb_host_tax_ch,
             krakendb_host_lib_ch,
-            krakendb_host_add_ch.ifEmpty(file('no_add'))
+            krakendb_host_genomes_ch.ifEmpty(file('no_add'))
             )
         krakendb_host_ch = KRAKENDB_BUILD(krakendb_host_unbuilt_ch).first()
     }
 
     // Classification Kraken db
     if (!krakendb_classif_ch && !skip_kraken) {
-        krakendb_tax_ch = KRAKENDB_DL_TAX()
+        krakendb_classif_tax_ch = KRAKENDB_DL_TAX()
         
         // If no library-dir was provided, download libraries:
-        if (!krakendb_lib_ch) {
-            krakendb_lib_ch = KRAKENDB_DL_LIB(krakendb_liblist_ch).collect()
-            krakendb_lib_ch = KRAKENDB_COMBINE_LIBS(krakendb_lib_ch)
-        }
+        krakendb_classif_lib_ch = KRAKENDB_DL_LIB(krakendb_classif_liblist_ch).collect()
+        krakendb_classif_lib_ch = KRAKENDB_COMBINE_LIBS(krakendb_classif_lib_ch)
         
         // Combine taxonomy, libraries, and optionally custom-addition genomes:
         krakendb_unbuilt_ch = KRAKENDB_COMBINE_AND_ADD(
-            krakendb_tax_ch,
-            krakendb_lib_ch,
-            krakendb_add_ch.ifEmpty(file('no_add'))
+            krakendb_classif_tax_ch,
+            krakendb_classif_lib_ch,
+            krakendb_classif_genomes_ch.ifEmpty(file('no_add'))
             )
         krakendb_classif_ch = KRAKENDB_BUILD(krakendb_unbuilt_ch).first()
     }
@@ -201,12 +192,6 @@ workflow  {
     //TODO - Strainphlan - https://github.com/biobakery/MetaPhlAn/wiki/StrainPhlAn-4.1
     //TODO - Visualization with Graphphlan? https://github.com/biobakery/graphlan/wiki
     //TODO - PhyloPhlAn?
-
-    // =========================================================================
-    //                             FUNCTIONAL ANALYSIS
-    // =========================================================================
-    // HUMAnN
-    //humann_ch = HUMANN(reads_ch)
 
     // =========================================================================
     //                              MAG ASSEMBLY
