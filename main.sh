@@ -5,14 +5,16 @@
 #SBATCH --output=slurm-nfmeta-%j.out
 
 # Load the Nextflow Conda environment
-module load miniconda3
-conda activate /fs/ess/PAS0471/jelmer/conda/nextflow
+module load miniconda3/24.1.2-py310
+conda activate /fs/ess/PAS0471/conda/nextflow-25.04
 
 # Constants
 WORKFLOW=jelmerp/nf-meta-seed
+export NXF_SINGULARITY_CACHEDIR=~/containers
 
 # Defaults
-resume=true && resume_opt="-resume"
+resume=true && resume_opt="-resume"   # Use Nextflow '-resume' option
+local_wf=false                        # Use workflow from Github Repo
 
 # Script options and args
 params_file=
@@ -21,6 +23,7 @@ while [ "$1" != "" ]; do
     case "$1" in
         --params )          shift; params_file=$1 ;;
         --restart )         resume=false ;;
+        --local_wf )        shift; local_wf=true;WORKFLOW=$1 ;;
         * )                 more_opts+=("$1") ;;
     esac
     shift
@@ -37,6 +40,15 @@ set -euo pipefail
 # Report
 echo
 date
+
+# Pull the latest version of the workflow
+if [[ "$local_wf" == false ]]; then
+    echo "# Getting the latest version of the workflow:"
+    nextflow pull $WORKFLOW
+    echo
+fi
+
+# Report
 echo "# Starting Nextflow nf-meta run with the following command:"
 echo "nextflow run $WORKFLOW -params-file $params_file -ansi-log false $resume_opt ${more_opts[*]}"
 echo -e "\n==========================================\n"
@@ -45,7 +57,7 @@ echo -e "\n==========================================\n"
 nextflow run $WORKFLOW \
     -params-file "$params_file" \
     -ansi-log false \
-    $resume_opt \
+    "$resume_opt" \
     ${more_opts[*]}
 
 # Report

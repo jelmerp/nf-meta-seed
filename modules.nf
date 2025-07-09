@@ -364,6 +364,8 @@ process MULTIQC {
 }
 
 process HOST_INDEX {
+    publishDir "${params.outdir}/hot_index", mode: 'copy', enabled: params.save_host_index
+
     input:
     path host_fasta
 
@@ -385,8 +387,8 @@ process HOST_REMOVE_ALIGN {
     tuple val(sample_id), path(reads)
 
     output:
-    tuple val(sample_id), path('*.fastq.gz'), emit: fastq //! ADDED .GZ HERE AND EMIT STATEMENT 2024-11-13
-    path('bowtie-log*txt')                                //! ADDED THIS LINE 2024-11-13
+    tuple val(sample_id), path('*.fastq.gz'), emit: fastq
+    path('bowtie-log*txt')
 
     shell:
     '''

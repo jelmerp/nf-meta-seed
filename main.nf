@@ -75,14 +75,14 @@ workflow  {
     krakendb_classif_ch = params.krakendb_classif && !skip_kraken
         ? Channel.fromPath(params.krakendb_classif, checkIfExists: true).first()
         : Channel.empty()
-    krakendb_host_genomes_ch = params.krakendb_host_genomes
-        ? Channel.fromPath(params.krakendb_host_genomes, checkIfExists: true).first()
+    krakendb_host_add_ch = params.krakendb_host_add
+        ? Channel.fromPath(params.krakendb_host_add, checkIfExists: true).first()
         : Channel.empty()
     krakendb_host_liblist_ch = krakendb_host_libs
         ? Channel.fromList(krakendb_host_libs)
         : null
-    krakendb_classif_genomes_ch = params.krakendb_classif_genomes
-        ? Channel.fromPath(params.krakendb_classif_genomes, checkIfExists: true).first()
+    krakendb_classif_add_ch = params.krakendb_classif_add
+        ? Channel.fromPath(params.krakendb_classif_add, checkIfExists: true).first()
         : Channel.empty()
     krakendb_classif_liblist_ch = krakendb_classif_libs
         ? Channel.fromList(krakendb_classif_libs)
@@ -114,7 +114,7 @@ workflow  {
         krakendb_host_unbuilt_ch = KRAKENDB_COMBINE_AND_ADD(
             krakendb_host_tax_ch,
             krakendb_host_lib_ch,
-            krakendb_host_genomes_ch.ifEmpty(file('no_add'))
+            krakendb_host_add_ch.ifEmpty(file('no_add'))
             )
         krakendb_host_ch = KRAKENDB_BUILD(krakendb_host_unbuilt_ch).first()
     }
@@ -131,7 +131,7 @@ workflow  {
         krakendb_unbuilt_ch = KRAKENDB_COMBINE_AND_ADD(
             krakendb_classif_tax_ch,
             krakendb_classif_lib_ch,
-            krakendb_classif_genomes_ch.ifEmpty(file('no_add'))
+            krakendb_classif_add_ch.ifEmpty(file('no_add'))
             )
         krakendb_classif_ch = KRAKENDB_BUILD(krakendb_unbuilt_ch).first()
     }
