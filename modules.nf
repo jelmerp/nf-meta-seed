@@ -364,7 +364,7 @@ process MULTIQC {
 }
 
 process HOST_INDEX {
-    publishDir "${params.outdir}/hot_index", mode: 'copy', enabled: params.save_host_index
+    publishDir "${params.outdir}/host_index", mode: 'copy', enabled: params.save_host_index
 
     input:
     path host_fasta
@@ -388,7 +388,7 @@ process HOST_REMOVE_ALIGN {
 
     output:
     tuple val(sample_id), path('*.fastq.gz'), emit: fastq
-    path('bowtie-log*txt')
+    path('bowtie-log*txt'), emit: logs
 
     shell:
     '''

@@ -2,6 +2,7 @@
 #SBATCH --account=PAS2693
 #SBATCH --time=24:00:00
 #SBATCH --mail-type=END,FAIL
+#SBATCH --job-name=nfmeta
 #SBATCH --output=slurm-nfmeta-%j.out
 
 # Load the Nextflow Conda environment

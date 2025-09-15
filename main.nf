@@ -54,7 +54,14 @@ workflow  {
     Reads in FASTQ files                   : ${params.reads}
     Output directory                       : ${params.outdir}
     Host removal method                    : ${params.host_removal_method}
+    -----
     Host assembly genome (if any)          : ${params.host_asm}
+    Kraken host-removal DB (if any)        : ${params.krakendb_host}
+    Kraken assignment DB (if any)          : ${params.krakendb_classif}
+    -----
+    Skip assembly step?                    : ${params.skip_assembly}
+    Skip Kraken classification?            : ${skip_kraken}
+    Skip Bracken abundance estimation?     : ${skip_bracken}
     ==============================================================
     """.stripIndent(true)
 
@@ -163,7 +170,8 @@ workflow  {
         host_index_ch = params.host_index
             ? Channel.fromPath(params.host_index, checkIfExists: true)
             : HOST_INDEX(host_asm_ch)
-        reads_ch = HOST_REMOVE_ALIGN(host_index_ch, reads_ch).fastq
+        host_aln_ch = HOST_REMOVE_ALIGN(host_index_ch, reads_ch).fastq
+        reads_ch = host_aln_ch.fastq
     }
     
     // =========================================================================
@@ -210,9 +218,8 @@ workflow  {
     drep_ch = DREP(bins_ch)
 
     // TODO - Assembly QC - Busco, etc
-    // TODO - Classification of the MAGs
-    // TODO - Abundance estimation
-    // TODO - Functional analysis
+    // TODO - MAG classification
+    // TODO - MAG abundance estimation
 
     // =========================================================================
     //                              MULTIQC
@@ -220,6 +227,7 @@ workflow  {
     // MultiQC
     mqc_in_ch = fastqc_ch.zip
         .mix(fastp_ch.report)
+        .mix(host_aln_ch.logs.ifEmpty([]))
         .mix(kraken_host_mqc_ch.ifEmpty([]))
         .mix(kraken_classif_ch.mqc.ifEmpty([]))
         .mix(bracken_ch.ifEmpty([]))
@@ -227,13 +235,16 @@ workflow  {
         .flatten()
         .collect()
     MULTIQC(mqc_in_ch)
-}
 
-// Report
-workflow.onComplete {
-    if (workflow.success) {
-        log.info ("\nThe pipeline has finished successfully! Final outputs are in the $params.outdir dir.")
-    } else {
-        log.info ("\nThe pipeline encountered an error and did not finish successfully")
+    // =========================================================================
+    //                              MULTIQC
+    // =========================================================================
+    workflow.onComplete {
+        if (workflow.success) {
+            log.info ("\nThe pipeline has finished successfully! Final outputs are in the $params.outdir dir.")
+        } else {
+            log.info ("\nThe pipeline encountered an error and did not finish successfully")
+        }
     }
+
 }
