@@ -1,7 +1,7 @@
 // QC reads
 process FASTQC {
-    publishDir "$params.outdir/fastqc", mode: 'copy', pattern: '*html'
-    
+    publishDir "${params.outdir}/read-qc/fastqc", mode: 'copy', pattern: '*html'
+
     input:
     tuple val(sample_id), path(reads)
 
@@ -33,7 +33,47 @@ process FASTP {
         -O ${sample_id}_R2_trimmed.fastq.gz \\
         -h ${sample_id}_fastp_report.html \\
         -j ${sample_id}_fastp_report.json \\
-        -w $task.cpus
+        -w ${task.cpus}
+    """
+}
+
+// Count reads in FASTQ files
+process READCOUNT {
+    input:
+    path reads
+    val run_id
+
+    output:
+    path 'readcounts*tsv'
+
+    script:
+    """
+    seqkit stats \
+        --threads $task.cpus \
+        --tabular \
+        ${reads} \
+        > readcounts_${run_id}.tsv
+    """
+}
+
+process REPORT_READLOSS {
+    publishDir "${params.outdir}/hostremove/readcounts", mode: 'copy', pattern: '*tsv'
+
+    input:
+    path readcount_pre
+    path readcount_post
+
+    output:
+    path "readloss.tsv"
+
+    script:
+    """
+    echo -e "sample\tpre_host_removal\tpost_host_removal\tpercent_removed" > readloss.tsv
+    join \
+        <(tail -n+2 ${readcount_pre} | cut -f 1,4 | sort -k1,1 | sed 's/_.*gz//') \
+        <(tail -n+2 ${readcount_post} | cut -f 1,4 | sort -k1,1 | sed 's/_.*gz//') |
+        awk '{print \$0, "\t", ((\$2-\$3)/\$2)*100}' \
+        >> readloss.tsv
     """
 }
 
@@ -47,10 +87,10 @@ process KRAKENDB_DL_DB {
 
     when:
     params.skip_kraken == false
-    
+
     script:
     """
-    wget $db_url
+    wget ${db_url}
     tar -xzvf *.tar.gz -C kraken_db
     """
 }
@@ -82,7 +122,7 @@ process KRAKENDB_DL_LIB {
 
     script:
     """
-    kraken2-build --download-library $library --db db_dir
+    kraken2-build --download-library ${library} --db db_dir
 
     mv db_dir/library/* .
     rm -r db_dir
@@ -103,7 +143,7 @@ process KRAKENDB_COMBINE_LIBS {
     script:
     """
     mkdir -p lib_dir
-    cp -rLv $lib_dirs lib_dir/
+    cp -rLv ${lib_dirs} lib_dir/
     """
 }
 
@@ -148,9 +188,9 @@ process KRAKENDB_BUILD {
     script:
     """
     mkdir -p kraken_db
-    cp -rLv $kraken_db_unbuilt/* kraken_db/
+    cp -rLv ${kraken_db_unbuilt}/* kraken_db/
     
-    kraken2-build --build --db kraken_db --threads $task.cpus
+    kraken2-build --build --db kraken_db --threads ${task.cpus}
     """
 }
 
@@ -164,7 +204,9 @@ process KRAKEN {
     val run_id
 
     output:
-    tuple val(sample_id), path('*report.txt'), path('*main.txt'), emit: output
+    tuple val(sample_id), path('*report.txt'), path('*main.txt'), emit: k_extract
+    tuple val(sample_id), path('*report.txt'), emit: report
+    tuple val(sample_id), path('*main.txt'), emit: main_out
     tuple val(sample_id), path('*fastq'), emit: classified_fq
     path 'mqc/*.txt', emit: mqc // For MultiQC, to avoid complications with tuple
     path '*.log'
@@ -176,19 +218,19 @@ process KRAKEN {
     """
     kraken2 \\
         --db ${kraken_db} \\
-        --report ${sample_id}_kraken-report.txt \\
-        --output ${sample_id}_kraken-main.txt \\
+        --report ${sample_id}_${run_id}_kraken-report.txt \\
+        --output ${sample_id}_${run_id}_kraken-main.txt \\
         --classified-out ${sample_id}#.fastq \\
-        --minimum-hit-groups $minhitgroups \\
-        --confidence $confidence \\
+        --minimum-hit-groups ${minhitgroups} \\
+        --confidence ${confidence} \\
         --gzip-compressed \\
         --paired \\
-        --threads $task.cpus \\
+        --threads ${task.cpus} \\
         ${reads[0]} \\
         ${reads[1]}
     
     mkdir -p mqc
-    cp ${sample_id}_kraken-report.txt mqc/${run_id}_${sample_id}_kraken-report.txt
+    cp *kraken-report.txt mqc/
 
     cp .command.log command_kraken_${sample_id}.log
     """
@@ -201,7 +243,7 @@ process KRAKEN_EXTRACT {
     val tax_ids
 
     output:
-    tuple val(sample_id), path('*fastq.gz'), emit: fq
+    tuple val(sample_id), path('*fastq.gz'), emit: fastq
     path 'logs'
 
     script:
@@ -240,9 +282,9 @@ process BRACKENDB_BUILD {
 
     script:
     """
-    cp -rLv $kraken_db bracken_db
+    cp -rLv ${kraken_db} bracken_db
 
-    bracken-build -d bracken_db -l $read_len -t $task.cpus
+    bracken-build -d bracken_db -l ${read_len} -t ${task.cpus}
     """
 }
 
@@ -250,7 +292,7 @@ process BRACKENDB_BUILD {
 process KRONA_TAX {
     output:
     path 'tax.tab'
-    
+
     script:
     """
     wget https://raw.githubusercontent.com/marbl/Krona/refs/heads/master/KronaTools/updateTaxonomy.sh
@@ -267,15 +309,13 @@ process KRONA_TAX {
 // Run Krona
 process KRONA {
     input:
-    tuple val(sample_id), path(kraken_report), path(kraken_main)
+    //tuple val(sample_id), path(kraken_report), path(kraken_main)
+    tuple val(sample_id), path(kraken_main)
     path taxfile
 
     output:
     path '*html'
 
-    //? [-q <integer>]   Column of input files to use as query ID. Required if magnitude files are specified. [Default: '1']
-    //? [-t <integer>]   Column of input files to use as taxonomy ID. [Default: '2']
-    
     script:
     """
     ktImportTaxonomy \\
@@ -289,17 +329,17 @@ process KRONA {
 
 // Run Bracken
 process BRACKEN {
-    publishDir "$params.outdir/bracken", mode: 'copy', pattern: '*txt'
-
     input:
-    tuple val(sample_id), path(kraken_report), path(kraken_main)
+    tuple val(sample_id), path(kraken_report)
     path bracken_db
     val tax_level
     val min_reads
     val read_len
+    val run_id
 
     output:
-    path '*bracken*txt'
+    path '*bracken*out.txt', emit: main_out
+    path '*bracken*report.txt', emit: report
 
     when:
     params.skip_bracken == false
@@ -309,27 +349,41 @@ process BRACKEN {
     bracken \
         -i ${kraken_report} \\
         -d ${bracken_db} \\
-        -o ${sample_id}_bracken-out.txt \\
-        -w ${sample_id}_bracken-report.txt \\
+        -o ${sample_id}_${run_id}_bracken-out.txt \\
+        -w ${sample_id}_${run_id}_bracken-report.txt \\
         -r ${read_len} \\
         -l ${tax_level} \\
         -t ${min_reads}
     """
 }
 
+process BIOM {
+    input:
+    path kraken_reports
+    val run_id
+
+    output:
+    path "*biom"
+
+    script:
+    """
+    kraken-biom --fmt json -o ${run_id}.biom ${kraken_reports}
+    """
+}
+
 // Assemble reads
 process ASSEMBLY {
-    publishDir "$params.outdir/spades", mode: 'copy', pattern: '*scaffolds.fasta'
-    publishDir "$params.outdir/spades", mode: 'copy', pattern: '*spades.log'
+    publishDir "${params.outdir}/assembly/spades/asm", mode: 'copy', pattern: '*scaffolds.fasta'
+    publishDir "${params.outdir}/assembly/spades/logs", mode: 'copy', pattern: '*spades.log'
 
     input:
     tuple val(sample_id), path(reads)
-    
+
     output:
     tuple val(sample_id), path("${sample_id}_scaffolds.fasta"), emit: fasta
     path "${sample_id}_contigs.fasta"
     path "${sample_id}_spades.log"
-    
+
     script:
     def memory_gb = MemoryUnit.of("${task.memory}").toUnit('GB')
     """
@@ -339,8 +393,8 @@ process ASSEMBLY {
         -o outdir \\
         --only-assembler \\
         --meta \\
-        --threads $task.cpus \\
-        --memory $memory_gb
+        --threads ${task.cpus} \\
+        --memory ${memory_gb}
     
     mv outdir/contigs.fasta ${sample_id}_contigs.fasta
     mv outdir/scaffolds.fasta ${sample_id}_scaffolds.fasta
@@ -349,22 +403,26 @@ process ASSEMBLY {
 }
 
 process MULTIQC {
-    publishDir "$params.outdir/multiqc", mode: 'copy'
+    publishDir "${params.outdir}/multiqc", mode: 'copy'
 
     input:
     path multiqc_input
+    val run_id
 
     output:
-    path 'multiqc_report.html'
+    path 'multiqc*html'
 
     script:
     """
-    multiqc --interactive .
+    multiqc \\
+        --filename multiqc_${run_id}.html \\
+        --interactive \\
+        .
     """
 }
 
 process HOST_INDEX {
-    publishDir "${params.outdir}/host_index", mode: 'copy', enabled: params.save_host_index
+    publishDir "${params.outdir}/hostremove/host_index", mode: 'copy', enabled: params.save_host_index
 
     input:
     path host_fasta
@@ -374,7 +432,7 @@ process HOST_INDEX {
 
     script:
     """
-    bowtie2-build $host_fasta host_index
+    bowtie2-build ${host_fasta} host_index
 
     mkdir -p host_index_dir
     mv *bt2 host_index_dir/
@@ -383,49 +441,55 @@ process HOST_INDEX {
 
 process HOST_REMOVE_ALIGN {
     input:
-    path(host_index_dir)
+    path host_index_dir
     tuple val(sample_id), path(reads)
 
     output:
     tuple val(sample_id), path('*.fastq.gz'), emit: fastq
-    path('bowtie-log*txt'), emit: logs
+    path ('bowtie-log*txt'), emit: logs
 
-    shell:
-    '''
-    index_prefix=$(ls !{host_index_dir} | head -n1 | sed -E "s/.[0-9]+.bt2//")
-    index_prefix_full=!{host_index_dir}/$index_prefix
+    // Note: redirecting stdout to /dev/null : this is the mapped SAM, which is not needed
 
-    bowtie2 \\
-        -p !{task.cpus} \\
-        -x $index_prefix_full \\
-        -1 !{reads[0]} \\
-        -2 !{reads[1]} \\
-        --local \\
-        --un-conc !{sample_id}_host_removed_reads \\
-        -S !{sample_id}_mapped_unmapped.sam \\
-        2> bowtie-log_!{sample_id}.txt
+    script:
+    """
+    index_prefix=\$(ls ${host_index_dir} | head -n1 | sed -E "s/.[0-9]+.bt2//")
+    index_prefix_full=${host_index_dir}/\$index_prefix
 
-    gzip -c !{sample_id}_host_removed_reads.1 > !{sample_id}_hostrm_R1.fastq.gz
-    gzip -c !{sample_id}_host_removed_reads.2 > !{sample_id}_hostrm_R2.fastq.gz
-    '''
+    bowtie2 \
+        --threads ${task.cpus} \
+        -x \$index_prefix_full \
+        -1 ${reads[0]} \
+        -2 ${reads[1]} \
+        --local \
+        --un-conc-gz ${sample_id}_host_removed_reads \
+        > /dev/null \
+        2> bowtie-log_${sample_id}.txt
+
+    mv -v ${sample_id}_host_removed_reads.1 ${sample_id}_hostrm_R1.fastq.gz
+    mv -v ${sample_id}_host_removed_reads.2 ${sample_id}_hostrm_R2.fastq.gz
+    """
 }
 
 process MAXBIN2 {
+    publishDir "${params.outdir}/assembly/maxbin2/bins", mode: "copy", pattern: "*.fasta"
+    publishDir "${params.outdir}/assembly/maxbin2/cov_bin", mode: "copy", pattern: "*.abundance"
+
     input:
     tuple val(sample_id), path(assembly), path(reads)
 
     output:
-    tuple val(sample_id), path('*.fasta'), emit: fasta
+    tuple val(sample_id), path('*.fasta'), emit: fasta, optional: true
+    path '*abundance', optional: true
 
     script:
     """
     set +e
     
     run_MaxBin.pl \\
-        -contig $assembly \\
+        -contig ${assembly} \\
         -reads ${reads[0]} \\
         -reads2 ${reads[1]} \\
-        -out $sample_id
+        -out ${sample_id}
 
     if [[ \$? -ne 0 ]]; then
         touch maxbin_dummy_${sample_id}.fasta
@@ -434,18 +498,31 @@ process MAXBIN2 {
 }
 
 process METABAT2 {
+    publishDir "${params.outdir}/assembly/metabat2/cov_contig", mode: "copy", pattern: "*depth.txt"
+    publishDir "${params.outdir}/assembly/metabat2/bins", mode: "copy", pattern: "*.fa"
+    publishDir "${params.outdir}/assembly/metabat2/cov_bin", mode: "copy", pattern: "*BinInfo.txt"
+
     input:
     tuple val(sample_id), path(assembly), path(bam), path(bam_idx), path(bed)
 
     output:
     tuple val(sample_id), path('*.fa'), emit: fasta, optional: true
-    path 'depth.txt'
+    path '*depth.txt', optional: true
+    path '*BinInfo.txt', optional: true
 
     script:
     """
-    jgi_summarize_bam_contig_depths --outputDepth depth.txt "$bam"
+    jgi_summarize_bam_contig_depths \\
+        --outputDepth ${sample_id}_depth.txt \\
+        "${bam}"
 
-    metabat2 -i "$assembly" -a depth.txt -m 1500 --maxP 75 -s 100000 -o "$sample_id"
+    metabat2 \\
+        -i "${assembly}" \\
+        -a ${sample_id}_depth.txt \\
+        -m 1500 \\
+        --maxP 75 \\
+        -s 100000 \\
+        -o "${sample_id}"
 
     n_files=`find . -type f -name "*fa" | wc -l`
     if [[ \$n_files -eq 0 ]]; then
@@ -455,36 +532,59 @@ process METABAT2 {
 }
 
 process CONCOCT {
+    publishDir "${params.outdir}/assembly/concoct/cov", mode: "copy", pattern: "covtable_*"
+    publishDir "${params.outdir}/assembly/concoct/bins", mode: "copy", pattern: "bins_*/*.fa"
+
     input:
     tuple val(sample_id), path(assembly), path(bam), path(bam_idx), path(bed)
 
     output:
-    tuple val(sample_id), path('fasta_bins/*.fa'), emit: fasta, optional: true
-    path 'contigs10k.fasta'
-    path 'covtable.tsv'
-    path 'clustering_gt1000.csv'
-    path 'merged.csv'
+    tuple val(sample_id), path('bins_*/*.fa'), emit: fasta, optional: true
+    path 'covtable_*'
+    // path 'contigs10k.fasta' 'clustering_gt1000.csv' 'merged.csv'
+
+    //TODO: don't hardcode read length
 
     script:
     """
-    cp "$bed" copy.bed # This is needed so Nextflow won't modify the input via the symlink
+    cp "${bed}" copy.bed # This is needed so Nextflow won't modify the input via the symlink
 
-    cut_up_fasta.py "$assembly" -c 100000 --merge_last -b copy.bed > contigs10k.fasta
+    cut_up_fasta.py \\
+        "${assembly}" \\
+        -c 100000 \\
+        --merge_last \\
+        -b copy.bed \\
+        > contigs10k_${sample_id}.fasta
     
-    concoct_coverage_table.py copy.bed "$bam" > covtable.tsv
+    concoct_coverage_table.py \\
+        copy.bed \\
+        "${bam}" \\
+        > covtable_${sample_id}.tsv
     
-    concoct --composition_file contigs10k.fasta --coverage_file covtable.tsv -s 100
+    concoct \\
+        --composition_file contigs10k_${sample_id}.fasta \\
+        --coverage_file covtable_${sample_id}.tsv \\
+        --seed 100 \\
+        --read_length 150 \\
+        --length_threshold 1000 \\
+        --threads ${task.cpus}
     
-    merge_cutup_clustering.py clustering_gt1000.csv > merged.csv
+    merge_cutup_clustering.py \\
+        clustering_gt1000.csv \\
+        > merged_${sample_id}.csv
 
-    mkdir -p fasta_bins
-    extract_fasta_bins.py "$assembly" merged.csv --output_path fasta_bins
+    mkdir -p bins_${sample_id}
+    extract_fasta_bins.py \\
+        "${assembly}" \\
+        merged_${sample_id}.csv \\
+        --output_path bins_${sample_id}
     """
 }
 
 process DREP {
-    publishDir "${params.outdir}/drep", mode: "copy", pattern: "dereplicated_genomes"
-    
+    publishDir "${params.outdir}/assembly/drep", mode: "copy", pattern: "dereplicated_genomes"
+    publishDir "${params.outdir}/assembly/drep/logs", mode: "copy", pattern: "*.log"
+
     input:
     tuple val(sample_id), path(concoct_fa), path(maxbin_fa), path(metabat_fa)
 
@@ -493,9 +593,13 @@ process DREP {
     path 'drep_out/dereplicated_genomes', emit: derepped
     path 'drep_out/data/checkM/checkM_outdir/results.tsv', emit: checkM_result
 
+    when:
+    params.skip_drep == false
+
     script:
     """
     dRep dereplicate drep_out -g *.f*a
+    cp .command.log drep_${sample_id}.log
     """
 }
 
@@ -504,21 +608,18 @@ process MAP2ASSEMBLY {
     tuple val(sample_id), path(assembly), path(reads)
 
     output:
-    tuple val(sample_id),
-          path("${sample_id}.bam"),
-          path("${sample_id}.bam.bai"),
-          path("${sample_id}.bed")
+    tuple val(sample_id), path("${sample_id}.bam"), path("${sample_id}.bam.bai"), path("${sample_id}.bed")
 
     script:
     """
-    bwa index -p "$sample_id" "$assembly"
+    bwa index -p "${sample_id}" "${assembly}"
 
-    bwa mem -t $task.cpus -a "$sample_id" ${reads[0]} ${reads[1]} |
-        samtools sort -o "$sample_id".bam -
+    bwa mem -t ${task.cpus} -a "${sample_id}" ${reads[0]} ${reads[1]} |
+        samtools sort -o "${sample_id}".bam -
 
-    samtools index "$sample_id".bam
+    samtools index "${sample_id}".bam
 
-    bedtools bamtobed -i "$sample_id".bam > "$sample_id".bed
+    bedtools bamtobed -i "${sample_id}".bam > "${sample_id}".bed
     """
 }
 
@@ -533,38 +634,40 @@ process METAPHLAN_DB {
 }
 
 process METAPHLAN {
-    publishDir "${params.outdir}/metaphlan", mode: "copy", pattern: "*_profile.txt"
-    publishDir "${params.outdir}/metaphlan", mode: "copy", pattern: "*.biom"
+    publishDir "${params.outdir}/classif-read/metaphlan/by-sample", mode: "copy", pattern: "*_profile.txt"
 
     input:
     tuple val(sample_id), path(reads)
     path metaphlan_db
 
     output:
-    tuple val(sample_id), path("*_profile.txt")   ,                emit: profile
-    tuple val(sample_id), path("*.biom")          ,                emit: biom
-    tuple val(sample_id), path('*.bowtie2out.txt'), optional:true, emit: bt2out
-    path "*_profile.txt"                                         , emit: mqc
+    tuple val(sample_id), path("*_profile.txt"), emit: profile
+    tuple val(sample_id), path('*.bowtie2out.txt'), optional: true, emit: bt2out
+    path "*_profile.txt", emit: mqc
 
     script:
     """
-    BT2_DB_INDEX=`find -L ${metaphlan_db} -name "*.rev.1.bt2*" | sed 's/\\.rev.1.bt2.*\$//' | sed 's/.*\\///'`
+    DB_VERSION=`find -L ${metaphlan_db} -name "*.rev.1.bt2*" | xargs -I{} basename {} .rev.1.bt2l`
+    echo \$DB_VERSION > metaphlan_db_version.txt
 
     metaphlan \\
-        --nproc ${task.cpus} \\
         --input_type fastq \\
-        ${reads[0]},${reads[1]} \\
-        --bowtie2out ${sample_id}.bowtie2out.txt \\
-        --bowtie2db ${metaphlan_db} \\
-        --index \$BT2_DB_INDEX \\
-        --biom ${sample_id}.biom \\
-        --output_file ${sample_id}_profile.txt
+        -1 ${reads[0]} \\
+        -2 ${reads[1]} \\
+        --subsampling_paired 100000000 \\
+        --db_dir ${metaphlan_db} \\
+        --index \$DB_VERSION \\
+        --mapout ${sample_id}_bowtie2out.txt \\
+        --output_file ${sample_id}_profile.txt \\
+        --nproc ${task.cpus}
     """
 }
 
 process METAPHLAN_MERGE {
+    publishDir "${params.outdir}/classif-read/metaphlan/merged", mode: "copy", pattern: "*metaphlan.txt"
+
     input:
-    path(profiles)
+    path metaphlan_profiles
 
     output:
     path '*txt'
@@ -572,26 +675,65 @@ process METAPHLAN_MERGE {
     script:
     """
     merge_metaphlan_tables.py \\
-        -o ${sample_id}.txt \\
-        ${profiles}
+        -o merged_metaphlan.txt \\
+        ${metaphlan_profiles}
     """
 }
 
-//TODO FINISH THIS
-process HUMANN {
-    publishDir "${params.outdir}/humann", mode: "copy"
-
-    input:
-    tuple val(sample_id), path(reads)
-
+process SOURMASH_DB {
     output:
-    tuple val(sample_id), path ('*{.log,.tsv}')
+    path 'sourmash_db.zip'
+    path 'sourmash_taxdb.csv'
 
     script:
     """
-    humann \
-        --input $reads \
-        --output . \
-        --threads $task.cpus
+    SOURMASH_DB_URL=https://farm.cse.ucdavis.edu/~ctbrown/sourmash-db.new/gtdb-rs220/gtdb-rs220-k31.dna.zip
+    SOURMAX_TAXDB_URL=https://farm.cse.ucdavis.edu/~ctbrown/sourmash-db.new/gtdb-rs220/gtdb-rs220.lineages.csv
+
+    curl --insecure -JLsS -o sourmash_db.zip \$SOURMASH_DB_URL
+    curl --insecure -JLsS -o sourmash_taxdb.csv \$TAX_CSV_URL
+    """
+}
+
+process SOURMASH {
+    publishDir "${params.outdir}/classif-asm/sourmash", mode: "copy"
+
+    input:
+    tuple val(sample_id), path(assembly)
+    path sourmash_db
+    path sourmash_taxdb
+
+    output:
+    path '*txt'
+    path '*csv'
+
+    script:
+    """
+    KMER_SIZE=31
+    THRESHOLD_BP=10000
+
+    sourmash sketch dna \
+        -p abund,k="\$KMER_SIZE" \
+        --output ${sample_id}.sig \
+        $assembly
+    
+    sourmash gather \
+        --output ${sample_id}_gather.csv \
+        --threshold-bp \$THRESHOLD_BP \
+        ${sample_id}.sig
+        $sourmash_taxdb
+
+    sourmash tax metagenome \
+        --gather-csv ${sample_id}_gather.csv \
+        --taxonomy-csv $sourmash_taxdb \
+        --use-abundances \
+        --rank species \
+        --output-format human \
+        --output-format csv_summary \
+        --output-format krona \
+        --output-format lineage_summary \
+        --output-format kreport \
+        --output-dir . \
+        --output-base $sample_id
     """
 }

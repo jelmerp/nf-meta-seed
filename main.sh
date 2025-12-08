@@ -24,7 +24,7 @@ while [ "$1" != "" ]; do
     case "$1" in
         --params )          shift; params_file=$1 ;;
         --restart )         resume=false ;;
-        --local_wf )        shift; local_wf=true;WORKFLOW=$1 ;;
+        --local_wf )        shift; local_wf=true; WORKFLOW=$1 ;;
         * )                 more_opts+=("$1") ;;
     esac
     shift
@@ -36,6 +36,7 @@ set -euo pipefail
 # Check options
 [[ -z "$params_file" ]] && echo "ERROR: Please use --params <params-file> to specify your parameter file" && exit 1
 [[ ! -f "$params_file" ]] && echo "ERROR: Parameter file $params_file does not exist" && exit 1
+[[ "$local_wf" == true && ! -d "$WORKFLOW" ]] && echo "ERROR: Local workflow $WORKFLOW does not exist" && exit 1
 [[ "$resume" == false ]] && resume_opt=
 
 # Report

@@ -3,6 +3,9 @@
 // Import processes
 include { FASTQC } from './modules.nf'
 include { FASTP } from './modules.nf'
+include { READCOUNT as READCOUNT_PRE } from './modules.nf'
+include { READCOUNT as READCOUNT_POST } from './modules.nf'
+include { REPORT_READLOSS } from './modules.nf'
 include { KRAKENDB_DL_DB } from './modules.nf'
 include { KRAKENDB_DL_TAX } from './modules.nf'
 include { KRAKENDB_DL_LIB } from './modules.nf'
@@ -11,15 +14,26 @@ include { KRAKENDB_BUILD } from './modules.nf'
 include { KRAKENDB_COMBINE_LIBS } from './modules.nf'
 include { BRACKENDB_BUILD } from './modules.nf'
 include { KRAKEN as KRAKEN_HOSTRM } from './modules.nf'
-include { KRAKEN as KRAKEN_CLASSIFY } from './modules.nf'
+include { KRAKEN as KRAKEN_CLASSIFY_HIGH } from './modules.nf'
+include { KRAKEN as KRAKEN_CLASSIFY_LOW } from './modules.nf'
 include { KRAKEN_EXTRACT } from './modules.nf'
 include { KRONA as KRONA_ON_HOSTRM } from './modules.nf'
-include { KRONA as KRONA_ON_CLASSIFY } from './modules.nf'
+include { KRONA as KRONA_ON_CLASSIFY_HIGH } from './modules.nf'
+include { KRONA as KRONA_ON_CLASSIFY_LOW } from './modules.nf'
+include { KRONA as KRONA_ON_BRACKEN_HIGH } from './modules.nf'
+include { KRONA as KRONA_ON_BRACKEN_LOW } from './modules.nf'
 include { KRONA_TAX } from './modules.nf'
-include { BRACKEN } from './modules.nf'
+include { BRACKEN as BRACKEN_HIGH } from './modules.nf'
+include { BRACKEN as BRACKEN_LOW } from './modules.nf'
+include { BIOM as KRAKEN_BIOM_HIGH } from './modules.nf'
+include { BIOM as KRAKEN_BIOM_LOW } from './modules.nf'
+include { BIOM as BRACKEN_BIOM_HIGH } from './modules.nf'
+include { BIOM as BRACKEN_BIOM_LOW } from './modules.nf'
 include { ASSEMBLY } from './modules.nf'
 include { MAP2ASSEMBLY } from './modules.nf'
-include { MULTIQC } from './modules.nf'
+include { MULTIQC as MULTIQC_QC } from './modules.nf'
+include { MULTIQC as MULTIQC_HOSTREMOVE } from './modules.nf'
+include { MULTIQC as MULTIQC_READCLASSIF } from './modules.nf'
 include { HOST_INDEX } from './modules.nf'
 include { HOST_REMOVE_ALIGN } from './modules.nf'
 include { CONCOCT } from './modules.nf'
@@ -29,6 +43,8 @@ include { DREP } from './modules.nf'
 include { METAPHLAN_DB } from './modules.nf'
 include { METAPHLAN } from './modules.nf'
 include { METAPHLAN_MERGE } from './modules.nf'
+include { SOURMASH_DB } from './modules.nf'
+include { SOURMASH } from './modules.nf'
 
 // Define the workflow
 workflow  {
@@ -42,10 +58,13 @@ workflow  {
     skip_kraken = params.skip_kraken
     skip_bracken = params.skip_bracken
     skip_bracken = skip_kraken ? true : skip_bracken
-    conf_classif = params.kraken_classif_confidence
     conf_host = params.kraken_host_confidence
-    minhit_classif = params.kraken_classif_minhitgroups
     minhit_host = params.kraken_host_minhitgroups
+
+    minhit_classif_high = params.kraken_classif_minhitgroups_high
+    conf_classif_high = params.kraken_classif_confidence_high
+    minhit_classif_low = params.kraken_classif_minhitgroups_low
+    conf_classif_low = params.kraken_classif_confidence_low
 
     // Report
     log.info """
@@ -62,6 +81,7 @@ workflow  {
     Skip assembly step?                    : ${params.skip_assembly}
     Skip Kraken classification?            : ${skip_kraken}
     Skip Bracken abundance estimation?     : ${skip_bracken}
+    Skip DREP MAG dereplication?           : ${params.skip_drep}
     ==============================================================
     """.stripIndent(true)
 
@@ -70,13 +90,13 @@ workflow  {
     // =========================================================================
     asm_ch = Channel.empty()
     reads_ch = Channel.fromFilePairs(params.reads, checkIfExists: true)
-    host_asm_ch = params.host_asm && params.host_removal_method == 'align'
+    host_asm_ch = params.host_asm && ( params.host_removal_method == 'align' || params.host_removal_method == 'both' )
         ? Channel.fromPath(params.host_asm).first()
         : Channel.empty()
     metaphlandb_ch = params.metaphlandb
         ? Channel.fromPath(params.metaphlandb, checkIfExists: true).first()
         : Channel.empty()
-    krakendb_host_ch = params.krakendb_host && params.host_removal_method == 'kraken'
+    krakendb_host_ch = params.krakendb_host && ( params.host_removal_method == 'kraken' || params.host_removal_method == 'both' )
         ? Channel.fromPath(params.krakendb_host, checkIfExists: true).first()
         : Channel.empty()
     krakendb_classif_ch = params.krakendb_classif && !skip_kraken
@@ -97,7 +117,8 @@ workflow  {
     brackendb_ch = params.brackendb && !skip_bracken
         ? Channel.fromPath(params.brackendb, checkIfExists: true).first()
         : Channel.empty()
-    kraken_host_mqc_ch = Channel.empty()
+    kraken_host_ch = Channel.empty()
+    host_aln_ch = Channel.empty()
 
     // =========================================================================
     //                          DATABASE BUILDING
@@ -144,7 +165,7 @@ workflow  {
     }
     
     // =========================================================================
-    //                  READ QC AND PREPROCESSING
+    //                  BASIC READ QC AND PREPROCESSING
     // =========================================================================
     // FastQC
     fastqc_ch = FASTQC(reads_ch)
@@ -153,53 +174,85 @@ workflow  {
     fastp_ch = FASTP(reads_ch)
     reads_ch = fastp_ch.fastq
 
-    // Host read removal
-    if (params.host_removal_method == 'kraken') {
+    // Pre-host removal read count - the input should be a simple list of FASTQ files:
+    fastq_list_ch = reads_ch.map {_id, reads -> reads[0]}.flatten().collect()
+    readcount_pre_ch = READCOUNT_PRE(fastq_list_ch, 'pre-host-remove')
+
+    // =========================================================================
+    //                  HOST READ REMOVAL
+    // =========================================================================
+    // Alignmnent-based:
+    if (params.host_removal_method == 'align' || params.host_removal_method == 'both') {
+        
+        // Create an index for the host reference genome, or use a pre-existing one
+        host_index_ch = params.host_index
+            ? Channel.fromPath(params.host_index, checkIfExists: true).collect()
+            : HOST_INDEX(host_asm_ch)
+        
+        // Align the reads
+        host_aln_ch = HOST_REMOVE_ALIGN(host_index_ch, reads_ch)
+        reads_ch = host_aln_ch.fastq
+    }
+
+    // Kraken-based:
+    if (params.host_removal_method == 'kraken' || params.host_removal_method == 'both') {
+        
         // Host read removal with Kraken
         kraken_host_ch = KRAKEN_HOSTRM(
             reads_ch, krakendb_host_ch, conf_host, minhit_host, 'hostremove'
-            )
-        kraken_host_mqc_ch = kraken_host_ch.mqc 
-        extract_input_ch = kraken_host_ch.output.join(reads_ch)
-        reads_ch = KRAKEN_EXTRACT(extract_input_ch, params.kraken_tax_remove).fq
-        //TODO report how many reads were removed
-        KRONA_ON_HOSTRM(kraken_host_ch.output, krona_tax_sh)
-    
-    } else if (params.host_removal_method == 'align') {
-        // Create an index for the host reference genome, or use a pre-existing one
-        host_index_ch = params.host_index
-            ? Channel.fromPath(params.host_index, checkIfExists: true)
-            : HOST_INDEX(host_asm_ch)
-        host_aln_ch = HOST_REMOVE_ALIGN(host_index_ch, reads_ch).fastq
-        reads_ch = host_aln_ch.fastq
+        )
+
+        // Extract non-assigned reads
+        extract_input_ch = kraken_host_ch.k_extract.join(reads_ch)
+        reads_ch = KRAKEN_EXTRACT(extract_input_ch, params.kraken_tax_remove).fastq
+        
+        // Krona
+        KRONA_ON_HOSTRM(kraken_host_ch.main_out, krona_tax_sh)
     }
-    
+
+    // Post-host removal read count - the input should be a simple list of FASTQ files:
+    fastq_list_ch = reads_ch.map {_id, reads -> reads[0]}.flatten().collect()
+    readcount_post_ch = READCOUNT_POST(fastq_list_ch, 'post-host-remove')
+    REPORT_READLOSS(readcount_pre_ch, readcount_post_ch)
+
     // =========================================================================
     //                          READ CLASSIFICATION
     // =========================================================================
     // Kraken
-    kraken_classif_ch = KRAKEN_CLASSIFY(
-        reads_ch, krakendb_classif_ch, conf_classif, minhit_classif, 'classify'
+    kraken_classif_high_ch = KRAKEN_CLASSIFY_HIGH(
+        reads_ch, krakendb_classif_ch, conf_classif_high, minhit_classif_high, 'classif_high'
         )
-    KRONA_ON_CLASSIFY(kraken_classif_ch.output, krona_tax_sh)
+    kraken_classif_low_ch = KRAKEN_CLASSIFY_LOW(
+        reads_ch, krakendb_classif_ch, conf_classif_low, minhit_classif_low, 'classif_low'
+        )
+    KRONA_ON_CLASSIFY_HIGH(kraken_classif_high_ch.main_out, krona_tax_sh)
+    KRONA_ON_CLASSIFY_LOW(kraken_classif_low_ch.main_out, krona_tax_sh)
     
+    KRAKEN_BIOM_HIGH(kraken_classif_high_ch.mqc.collect(), 'kraken_high')
+    KRAKEN_BIOM_LOW(kraken_classif_low_ch.mqc.collect(), 'kraken_low')
+
     // Bracken
     if (!brackendb_ch && !skip_bracken) {
         brackendb_ch = BRACKENDB_BUILD(krakendb_classif_ch, params.bracken_readlen)
     }
-    bracken_ch = BRACKEN(
-        kraken_classif_ch.output, brackendb_ch,
-        params.bracken_taxlevel, params.bracken_minreads, params.bracken_readlen
+
+    bracken_high_ch = BRACKEN_HIGH(
+        kraken_classif_high_ch.report, brackendb_ch,
+        params.bracken_taxlevel, params.bracken_minreads, params.bracken_readlen, 'high'
         )
-    //TODO - Krona on Bracken output?
-    //TODO - Use https://github.com/jenniferlu717/KrakenTools?tab=readme-ov-file#kreport2kronapy
+    // KRONA_ON_BRACKEN(bracken_ch.main_out, krona_tax_sh) // THIS WILL NOT WORK, NEED 'MAIN' KRAKEN-STYLE OUTPUT
+    BRACKEN_BIOM_HIGH(bracken_high_ch.report.collect(), 'bracken')
+
+    bracken_low_ch = BRACKEN_LOW(
+        kraken_classif_low_ch.report, brackendb_ch,
+        params.bracken_taxlevel, params.bracken_minreads, params.bracken_readlen, 'low'
+        )
+    // KRONA_ON_BRACKEN(bracken_ch.main_out, krona_tax_sh) // THIS WILL NOT WORK, NEED 'MAIN' KRAKEN-STYLE OUTPUT
+    BRACKEN_BIOM_LOW(bracken_low_ch.report.collect(), 'bracken')
 
     // MetaPhlAn
     metaphlan_ch = METAPHLAN(reads_ch, metaphlandb_ch)
-    //TODO - METAPHLAN_MERGE()
-    //TODO - Strainphlan - https://github.com/biobakery/MetaPhlAn/wiki/StrainPhlAn-4.1
-    //TODO - Visualization with Graphphlan? https://github.com/biobakery/graphlan/wiki
-    //TODO - PhyloPhlAn?
+    METAPHLAN_MERGE(metaphlan_ch.mqc.collect())
 
     // =========================================================================
     //                              MAG ASSEMBLY
@@ -215,36 +268,41 @@ workflow  {
     metabat_ch = METABAT2(asm_and_map_ch)
     concoct_ch = CONCOCT(asm_and_map_ch)
     bins_ch = concoct_ch.fasta.join(maxbin_ch.fasta).join(metabat_ch.fasta)
-    drep_ch = DREP(bins_ch)
+    DREP(bins_ch)
 
-    // TODO - Assembly QC - Busco, etc
-    // TODO - MAG classification
-    // TODO - MAG abundance estimation
+    // =========================================================================
+    //                              MAG CLASSIFICATION
+    // =========================================================================
+    sourmash_db_ch = SOURMASH_DB()
+    SOURMASH(asm_ch, sourmash_db_ch)
 
     // =========================================================================
     //                              MULTIQC
     // =========================================================================
     // MultiQC
-    mqc_in_ch = fastqc_ch.zip
-        .mix(fastp_ch.report)
-        .mix(host_aln_ch.logs.ifEmpty([]))
-        .mix(kraken_host_mqc_ch.ifEmpty([]))
-        .mix(kraken_classif_ch.mqc.ifEmpty([]))
-        .mix(bracken_ch.ifEmpty([]))
-        .mix(metaphlan_ch.mqc.ifEmpty([]))
-        .flatten()
+    mqc_qc_ch = fastqc_ch.zip.mix(fastp_ch.report).collect()
+    MULTIQC_QC(mqc_qc_ch, 'read-qc')
+
+    mqc_host_ch = host_aln_ch.logs.ifEmpty([])
+        .mix(kraken_host_ch.mqc.ifEmpty([]))
         .collect()
-    MULTIQC(mqc_in_ch)
+    MULTIQC_HOSTREMOVE(mqc_host_ch, 'host-remove')
+
+    mqc_readclassif_ch = kraken_classif_high_ch.mqc.ifEmpty([])
+        .mix(kraken_classif_low_ch.mqc.ifEmpty([]))
+        .mix(bracken_high_ch.report.ifEmpty([]))
+        .mix(bracken_low_ch.report.ifEmpty([]))
+        .mix(metaphlan_ch.mqc.ifEmpty([]))
+        .collect()
+    MULTIQC_READCLASSIF(mqc_readclassif_ch, 'read-classif')
 
     // =========================================================================
     //                              MULTIQC
     // =========================================================================
-    workflow.onComplete {
-        if (workflow.success) {
-            log.info ("\nThe pipeline has finished successfully! Final outputs are in the $params.outdir dir.")
-        } else {
-            log.info ("\nThe pipeline encountered an error and did not finish successfully")
-        }
+    workflow.onComplete = {
+        log.info "\n===================\nPipeline completed at: $workflow.complete"
+        log.info "\nThe pipeline ${ workflow.success ? 'completed successfully!' : 'failed!' }"
+        log.info "=================="
     }
 
 }
