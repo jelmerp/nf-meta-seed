@@ -14,8 +14,10 @@ include { KRAKENDB_BUILD } from './modules.nf'
 include { KRAKENDB_COMBINE_LIBS } from './modules.nf'
 include { BRACKENDB_BUILD } from './modules.nf'
 include { KRAKEN as KRAKEN_HOSTRM } from './modules.nf'
-include { KRAKEN as KRAKEN_CLASSIFY_HIGH } from './modules.nf'
-include { KRAKEN as KRAKEN_CLASSIFY_LOW } from './modules.nf'
+include { KRAKEN as KRAKEN_CLASSIFY_READS_HIGH } from './modules.nf'
+include { KRAKEN as KRAKEN_CLASSIFY_READS_LOW } from './modules.nf'
+include { KRAKEN as KRAKEN_CLASSIFY_ASM_LOW } from './modules.nf'
+include { KRAKEN as KRAKEN_CLASSIFY_ASM_HIGH } from './modules.nf'
 include { KRAKEN_EXTRACT } from './modules.nf'
 include { KRONA as KRONA_ON_HOSTRM } from './modules.nf'
 include { KRONA as KRONA_ON_CLASSIFY_HIGH } from './modules.nf'
@@ -86,39 +88,39 @@ workflow  {
     """.stripIndent(true)
 
     // =========================================================================
-    //                   CREATE CHANNELS FROM INPUT FILES
+    //                   CREATE channelS FROM INPUT FILES
     // =========================================================================
-    asm_ch = Channel.empty()
-    reads_ch = Channel.fromFilePairs(params.reads, checkIfExists: true)
+    asm_ch = channel.empty()
+    reads_ch = channel.fromFilePairs(params.reads, checkIfExists: true)
     host_asm_ch = params.host_asm && ( params.host_removal_method == 'align' || params.host_removal_method == 'both' )
-        ? Channel.fromPath(params.host_asm).first()
-        : Channel.empty()
+        ? channel.fromPath(params.host_asm).first()
+        : channel.empty()
     metaphlandb_ch = params.metaphlandb
-        ? Channel.fromPath(params.metaphlandb, checkIfExists: true).first()
-        : Channel.empty()
+        ? channel.fromPath(params.metaphlandb, checkIfExists: true).first()
+        : channel.empty()
     krakendb_host_ch = params.krakendb_host && ( params.host_removal_method == 'kraken' || params.host_removal_method == 'both' )
-        ? Channel.fromPath(params.krakendb_host, checkIfExists: true).first()
-        : Channel.empty()
+        ? channel.fromPath(params.krakendb_host, checkIfExists: true).first()
+        : channel.empty()
     krakendb_classif_ch = params.krakendb_classif && !skip_kraken
-        ? Channel.fromPath(params.krakendb_classif, checkIfExists: true).first()
-        : Channel.empty()
+        ? channel.fromPath(params.krakendb_classif, checkIfExists: true).first()
+        : channel.empty()
     krakendb_host_add_ch = params.krakendb_host_add
-        ? Channel.fromPath(params.krakendb_host_add, checkIfExists: true).first()
-        : Channel.empty()
+        ? channel.fromPath(params.krakendb_host_add, checkIfExists: true).first()
+        : channel.empty()
     krakendb_host_liblist_ch = krakendb_host_libs
-        ? Channel.fromList(krakendb_host_libs)
+        ? channel.fromList(krakendb_host_libs)
         : null
     krakendb_classif_add_ch = params.krakendb_classif_add
-        ? Channel.fromPath(params.krakendb_classif_add, checkIfExists: true).first()
-        : Channel.empty()
+        ? channel.fromPath(params.krakendb_classif_add, checkIfExists: true).first()
+        : channel.empty()
     krakendb_classif_liblist_ch = krakendb_classif_libs
-        ? Channel.fromList(krakendb_classif_libs)
+        ? channel.fromList(krakendb_classif_libs)
         : null
     brackendb_ch = params.brackendb && !skip_bracken
-        ? Channel.fromPath(params.brackendb, checkIfExists: true).first()
-        : Channel.empty()
-    kraken_host_ch = Channel.empty()
-    host_aln_ch = Channel.empty()
+        ? channel.fromPath(params.brackendb, checkIfExists: true).first()
+        : channel.empty()
+    kraken_host_ch = channel.empty()
+    host_aln_ch = channel.empty()
 
     // =========================================================================
     //                          DATABASE BUILDING
@@ -186,7 +188,7 @@ workflow  {
         
         // Create an index for the host reference genome, or use a pre-existing one
         host_index_ch = params.host_index
-            ? Channel.fromPath(params.host_index, checkIfExists: true).collect()
+            ? channel.fromPath(params.host_index, checkIfExists: true).collect()
             : HOST_INDEX(host_asm_ch)
         
         // Align the reads
@@ -219,10 +221,10 @@ workflow  {
     //                          READ CLASSIFICATION
     // =========================================================================
     // Kraken
-    kraken_classif_high_ch = KRAKEN_CLASSIFY_HIGH(
+    kraken_classif_high_ch = KRAKEN_CLASSIFY_READS_HIGH(
         reads_ch, krakendb_classif_ch, conf_classif_high, minhit_classif_high, 'classif_high'
         )
-    kraken_classif_low_ch = KRAKEN_CLASSIFY_LOW(
+    kraken_classif_low_ch = KRAKEN_CLASSIFY_READS_LOW(
         reads_ch, krakendb_classif_ch, conf_classif_low, minhit_classif_low, 'classif_low'
         )
     KRONA_ON_CLASSIFY_HIGH(kraken_classif_high_ch.main_out, krona_tax_sh)
@@ -239,14 +241,14 @@ workflow  {
     bracken_high_ch = BRACKEN_HIGH(
         kraken_classif_high_ch.report, brackendb_ch,
         params.bracken_taxlevel, params.bracken_minreads, params.bracken_readlen, 'high'
-        )
+    )
     // KRONA_ON_BRACKEN(bracken_ch.main_out, krona_tax_sh) // THIS WILL NOT WORK, NEED 'MAIN' KRAKEN-STYLE OUTPUT
     BRACKEN_BIOM_HIGH(bracken_high_ch.report.collect(), 'bracken')
 
     bracken_low_ch = BRACKEN_LOW(
         kraken_classif_low_ch.report, brackendb_ch,
         params.bracken_taxlevel, params.bracken_minreads, params.bracken_readlen, 'low'
-        )
+    )
     // KRONA_ON_BRACKEN(bracken_ch.main_out, krona_tax_sh) // THIS WILL NOT WORK, NEED 'MAIN' KRAKEN-STYLE OUTPUT
     BRACKEN_BIOM_LOW(bracken_low_ch.report.collect(), 'bracken')
 
@@ -264,17 +266,27 @@ workflow  {
     asm_and_map_ch = asm_ch.join(asm_map_ch)
 
     // Binning
-    maxbin_ch = MAXBIN2(asm_and_reads_ch)
+    // maxbin_ch = MAXBIN2(asm_and_reads_ch) -- DISABLED FOR NOW DUE TO ERRORS
     metabat_ch = METABAT2(asm_and_map_ch)
     concoct_ch = CONCOCT(asm_and_map_ch)
-    bins_ch = concoct_ch.fasta.join(maxbin_ch.fasta).join(metabat_ch.fasta)
-    DREP(bins_ch)
+    // bins_ch = concoct_ch.fasta.join(maxbin_ch.fasta).join(metabat_ch.fasta)
+    bins_ch = concoct_ch.fasta.join(metabat_ch.fasta)
+    drep_ch = DREP(bins_ch)
 
     // =========================================================================
     //                              MAG CLASSIFICATION
     // =========================================================================
-    sourmash_db_ch = SOURMASH_DB()
-    SOURMASH(asm_ch, sourmash_db_ch)
+    // Sourmash
+    //sourmash_db_ch = SOURMASH_DB()
+    //SOURMASH(bins_ch, sourmash_db_ch)
+
+    // Kraken
+    //kraken_classif_high_ch = KRAKEN_CLASSIFY_ASM_HIGH(
+    //    bins_ch, krakendb_classif_ch, conf_classif_high, minhit_classif_high, 'classif_high'
+    //)
+    //kraken_classif_low_ch = KRAKEN_CLASSIFY_ASM_LOW(
+    //    bins_ch, krakendb_classif_ch, conf_classif_low, minhit_classif_low, 'classif_low'
+    //)
 
     // =========================================================================
     //                              MULTIQC

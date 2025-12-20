@@ -586,7 +586,8 @@ process DREP {
     publishDir "${params.outdir}/assembly/drep/logs", mode: "copy", pattern: "*.log"
 
     input:
-    tuple val(sample_id), path(concoct_fa), path(maxbin_fa), path(metabat_fa)
+    //tuple val(sample_id), path(concoct_fa), path(maxbin_fa), path(metabat_fa)
+    tuple val(sample_id), path(concoct_fa), path(metabat_fa)
 
     output:
     path 'drep_out/data_tables'
@@ -691,7 +692,7 @@ process SOURMASH_DB {
     SOURMAX_TAXDB_URL=https://farm.cse.ucdavis.edu/~ctbrown/sourmash-db.new/gtdb-rs220/gtdb-rs220.lineages.csv
 
     curl --insecure -JLsS -o sourmash_db.zip \$SOURMASH_DB_URL
-    curl --insecure -JLsS -o sourmash_taxdb.csv \$TAX_CSV_URL
+    curl --insecure -JLsS -o sourmash_taxdb.csv \$SOURMAX_TAXDB_URL
     """
 }
 
